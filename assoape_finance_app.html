@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Assoape Finance App</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    header { background: #2c3e50; color: white; padding: 1rem; text-align: center; }
+    nav { background: #34495e; padding: 0.5rem; display: flex; justify-content: center; gap: 1rem; }
+    nav button { background: #ecf0f1; border: none; padding: 0.5rem 1rem; cursor: pointer; border-radius: 5px; }
+    nav button:hover { background: #bdc3c7; }
+    main { padding: 1rem; }
+    section { display: none; }
+    section.active { display: block; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    table, th, td { border: 1px solid #ccc; }
+    th, td { padding: 0.5rem; text-align: left; }
+    th { cursor: pointer; background: #f4f4f4; }
+    .pagination { margin-top: 1rem; display: flex; justify-content: center; gap: 1rem; }
+    .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+    canvas { width: 100% !important; height: 300px !important; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>ASSOAPE - Controle Financeiro</h1>
+  </header>
+  <nav>
+    <button onclick="showSection('dashboard')">Dashboard</button>
+    <button onclick="showSection('receitas')">Receitas</button>
+    <button onclick="showSection('despesas')">Despesas</button>
+    <button onclick="showSection('relatorios')">Relatórios</button>
+  </nav>
+  <main>
+    <!-- Dashboard -->
+    <section id="dashboard" class="active">
+      <h2>Dashboard</h2>
+      <div id="kpis"></div>
+      <div class="dashboard-grid">
+        <canvas id="chartReceitas"></canvas>
+        <canvas id="chartDespesas"></canvas>
+        <canvas id="chartMensal"></canvas>
+      </div>
+    </section>
+
+    <!-- Receitas -->
+    <section id="receitas">
+      <h2>Cadastrar Receita</h2>
+      <form id="formReceita">
+        <label>Data: <input type="date" id="rData" required></label>
+        <label>Categoria: 
+          <select id="rCategoria">
+            <option>Mensalidade</option>
+            <option>Venda de Mel</option>
+            <option>Serviços</option>
+            <option>Outros</option>
+          </select>
+        </label>
+        <label>Valor: <input type="number" id="rValor" step="0.01" required></label>
+        <label>Observação: <input type="text" id="rObs"></label>
+        <button type="submit">Salvar</button>
+      </form>
+    </section>
+
+    <!-- Despesas -->
+    <section id="despesas">
+      <h2>Cadastrar Despesa</h2>
+      <form id="formDespesa">
+        <label>Data: <input type="date" id="dData" required></label>
+        <label>Categoria: 
+          <select id="dCategoria">
+            <option>Insumos</option>
+            <option>Expediente</option>
+            <option>Manutenção</option>
+            <option>Servidores</option>
+            <option>Outros</option>
+          </select>
+        </label>
+        <label>Valor: <input type="number" id="dValor" step="0.01" required></label>
+        <label>Observação: <input type="text" id="dObs"></label>
+        <button type="submit">Salvar</button>
+      </form>
+    </section>
+
+    <!-- Relatórios -->
+    <section id="relatorios">
+      <h2>Relatórios</h2>
+      <label>Data inicial: <input type="date" id="fInicio"></label>
+      <label>Data final: <input type="date" id="fFim"></label>
+      <button onclick="gerarRelatorio()">Gerar</button>
+      <button onclick="exportCSV()">Exportar CSV</button>
+      <button onclick="exportPDF()">Exportar PDF</button>
+      <button onclick="exportExcel()">Exportar Excel</button>
+      <div id="relatorio"></div>
+      <div class="pagination">
+        <button onclick="prevPage()">Anterior</button>
+        <span id="pageInfo"></span>
+        <button onclick="nextPage()">Próxima</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Utilidades
+    const getData = () => JSON.parse(localStorage.getItem('financeData') || '{"receitas":[],"despesas":[]}');
+    const saveData = data => localStorage.setItem('financeData', JSON.stringify(data));
+
+    function showSection(id) {
+      document.querySelectorAll('main section').forEach(s => s.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+      if(id==='dashboard') renderDashboard();
+    }
+
+    // Cadastro Receitas
+    document.getElementById('formReceita').onsubmit = e => {
+      e.preventDefault();
+      const data = getData();
+      data.receitas.push({id:Date.now(), data:rData.value, categoria:rCategoria.value, valor:+rValor.value, obs:rObs.value});
+      saveData(data);
+      e.target.reset();
+      alert('Receita salva!');
+    };
+
+    // Cadastro Despesas
+    document.getElementById('formDespesa').onsubmit = e => {
+      e.preventDefault();
+      const data = getData();
+      data.despesas.push({id:Date.now(), data:dData.value, categoria:dCategoria.value, valor:+dValor.value, obs:dObs.value});
+      saveData(data);
+      e.target.reset();
+      alert('Despesa salva!');
+    };
+
+    // Relatórios com paginação e edição inline
+    let currentPage=1, rowsPerPage=10, sortKey='data', sortAsc=true, relData=[];
+
+    function gerarRelatorio(){
+      const {receitas, despesas}=getData();
+      const inicio=fInicio.value, fim=fFim.value;
+      relData=[...receitas.map(r=>({...r,tipo:'Receita'})),...despesas.map(d=>({...d,tipo:'Despesa'}))];
+      if(inicio) relData=relData.filter(x=>x.data>=inicio);
+      if(fim) relData=relData.filter(x=>x.data<=fim);
+      renderTable();
+    }
+
+    function renderTable(){
+      relData.sort((a,b)=>{
+        if(a[sortKey]<b[sortKey]) return sortAsc?-1:1;
+        if(a[sortKey]>b[sortKey]) return sortAsc?1:-1;
+        return 0;
+      });
+      const start=(currentPage-1)*rowsPerPage;
+      const pageData=relData.slice(start,start+rowsPerPage);
+      let html='<table><thead><tr>';
+      ['data','categoria','valor','obs','tipo','ações'].forEach(k=>{
+        html+=`<th onclick="sortBy('${k}')">${k}</th>`;
+      });
+      html+='</tr></thead><tbody>';
+      pageData.forEach(item=>{
+        html+=`<tr data-id="${item.id}" data-tipo="${item.tipo}">
+          <td>${item.data}</td>
+          <td>${item.categoria}</td>
+          <td>${item.valor.toFixed(2)}</td>
+          <td>${item.obs||''}</td>
+          <td>${item.tipo}</td>
+          <td><button onclick="editRow(${item.id},'${item.tipo}')">Editar</button><button onclick="deleteRow(${item.id},'${item.tipo}')">Excluir</button></td>
+        </tr>`;
+      });
+      html+='</tbody></table>';
+      document.getElementById('relatorio').innerHTML=html;
+      document.getElementById('pageInfo').textContent=`Página ${currentPage} de ${Math.ceil(relData.length/rowsPerPage)}`;
+    }
+
+    function sortBy(key){
+      if(sortKey===key) sortAsc=!sortAsc; else {sortKey=key; sortAsc=true;}
+      renderTable();
+    }
+    function prevPage(){if(currentPage>1){currentPage--;renderTable();}}
+    function nextPage(){if(currentPage<Math.ceil(relData.length/rowsPerPage)){currentPage++;renderTable();}}
+
+    function deleteRow(id,tipo){
+      if(!confirm('Excluir este registro?')) return;
+      const data=getData();
+      data[tipo.toLowerCase()+'s']=data[tipo.toLowerCase()+'s'].filter(x=>x.id!==id);
+      saveData(data);
+      gerarRelatorio();
+    }
+
+    function editRow(id,tipo){
+      const tr=document.querySelector(`tr[data-id='${id}']`);
+      const tds=tr.querySelectorAll('td');
+      const [data,categoria,valor,obs]=[tds[0].innerText,tds[1].innerText,tds[2].innerText,tds[3].innerText];
+      tds[0].innerHTML=`<input type='date' value='${data}'>`;
+      tds[1].innerHTML=`<input type='text' value='${categoria}'>`;
+      tds[2].innerHTML=`<input type='number' step='0.01' value='${valor}'>`;
+      tds[3].innerHTML=`<input type='text' value='${obs}'>`;
+      tds[5].innerHTML=`<button onclick="saveRow(${id},'${tipo}')">Salvar</button>`;
+    }
+
+    function saveRow(id,tipo){
+      const tr=document.querySelector(`tr[data-id='${id}']`);
+      const inputs=tr.querySelectorAll('input');
+      const [data,categoria,valor,obs]=[...inputs].map(i=>i.value);
+      const all=getData();
+      let arr=all[tipo.toLowerCase()+'s'];
+      let item=arr.find(x=>x.id===id);
+      item.data=data; item.categoria=categoria; item.valor=+valor; item.obs=obs;
+      saveData(all);
+      gerarRelatorio();
+    }
+
+    // Exportações
+    function exportCSV(){
+      let csv='Data,Categoria,Valor,Obs,Tipo\n';
+      relData.forEach(i=>{csv+=`"${i.data}","${i.categoria}","${i.valor}","${i.obs||''}","${i.tipo}"\n`;});
+      const blob=new Blob([csv],{type:'text/csv'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a'); a.href=url; a.download='relatorio.csv'; a.click();
+    }
+
+    async function exportPDF(){
+      const { jsPDF } = window.jspdf;
+      const doc=new jsPDF();
+      doc.text('Relatório Financeiro ASSOAPE',10,10);
+      let y=20;
+      relData.forEach(i=>{
+        doc.text(`${i.data} | ${i.categoria} | ${i.valor.toFixed(2)} | ${i.obs||''} | ${i.tipo}`,10,y);
+        y+=8;
+        if(y>280){doc.addPage(); y=20;}
+      });
+      doc.save('relatorio.pdf');
+    }
+
+    function exportExcel(){
+      const ws=XLSX.utils.json_to_sheet(relData);
+      const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws,'Relatório');
+      XLSX.writeFile(wb,'relatorio.xlsx');
+    }
+
+    // Dashboard com Chart.js
+    let chartR, chartD, chartM;
+    function renderDashboard(){
+      const {receitas, despesas}=getData();
+      const totalR=receitas.reduce((a,b)=>a+b.valor,0);
+      const totalD=despesas.reduce((a,b)=>a+b.valor,0);
+      const saldo=totalR-totalD;
+      document.getElementById('kpis').innerHTML=`<p><b>Receitas:</b> R$ ${totalR.toFixed(2)} | <b>Despesas:</b> R$ ${totalD.toFixed(2)} | <b>Saldo:</b> R$ ${saldo.toFixed(2)}</p>`;
+      const rCat={}; receitas.forEach(r=>rCat[r.categoria]=(rCat[r.categoria]||0)+r.valor);
+      const dCat={}; despesas.forEach(d=>dCat[d.categoria]=(dCat[d.categoria]||0)+d.valor);
+      const mensal={};
+      [...receitas.map(r=>({...r,tipo:'R'})),...despesas.map(d=>({...d,tipo:'D'}))].forEach(x=>{
+        const mes=x.data.slice(0,7);
+        if(!mensal[mes]) mensal[mes]={R:0,D:0};
+        mensal[mes][x.tipo]+=x.valor;
+      });
+      if(chartR) chartR.destroy();
+      if(chartD) chartD.destroy();
+      if(chartM) chartM.destroy();
+      chartR=new Chart(document.getElementById('chartReceitas'),{type:'pie',data:{labels:Object.keys(rCat),datasets:[{data:Object.values(rCat)}]}});
+      chartD=new Chart(document.getElementById('chartDespesas'),{type:'pie',data:{labels:Object.keys(dCat),datasets:[{data:Object.values(dCat)}]}});
+      chartM=new Chart(document.getElementById('chartMensal'),{type:'bar',data:{labels:Object.keys(mensal),datasets:[{label:'Receitas',data:Object.values(mensal).map(x=>x.R)},{label:'Despesas',data:Object.values(mensal).map(x=>x.D)}]}});
+    }
+  </script>
+</body>
+</html>
